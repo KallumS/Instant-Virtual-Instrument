@@ -1,0 +1,69 @@
+name: Build
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  build:
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: Windows
+            os: windows-latest
+            configure: -A x64
+            formats: InstantVirtualInstrument_VST3 InstantVirtualInstrument_Standalone
+          - name: macOS
+            os: macos-latest
+            configure: -G Xcode -DCMAKE_OSX_ARCHITECTURES="arm64;x86_64"
+            formats: InstantVirtualInstrument_VST3 InstantVirtualInstrument_AU InstantVirtualInstrument_Standalone
+          - name: Linux
+            os: ubuntu-24.04
+            configure: -G Ninja
+            formats: InstantVirtualInstrument_VST3 InstantVirtualInstrument_Standalone
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Linux dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ninja-build xvfb libasound2-dev libfreetype-dev libfontconfig1-dev \
+            libx11-dev libxrandr-dev libxinerama-dev libxcursor-dev libxext-dev libxcomposite-dev libgl-dev
+
+      - name: Configure
+        shell: bash
+        run: cmake -S . -B build ${{ matrix.configure }} -DCMAKE_BUILD_TYPE=Release
+
+      - name: Build plugin
+        shell: bash
+        run: |
+          for t in ${{ matrix.formats }} IVICoreTests IVIPluginTests; do
+            cmake --build build --config Release --target $t --parallel 4
+          done
+
+      - name: Test
+        shell: bash
+        run: |
+          ctest --test-dir build -C Release --output-on-failure
+          exe=$(find build -name "IVIPluginTests" -o -name "IVIPluginTests.exe" | grep -v CMakeFiles | head -1)
+          if [ "$RUNNER_OS" = "Linux" ]; then xvfb-run -a "$exe"; else "$exe"; fi
+
+      - name: Collect artefacts
+        shell: bash
+        run: |
+          mkdir -p dist
+          find build -path "*_artefacts/Release/VST3/*.vst3" -maxdepth 6 -prune -exec cp -R {} dist/ \;
+          find build -path "*_artefacts/Release/AU/*.component" -maxdepth 6 -prune -exec cp -R {} dist/ \; || true
+          find build -path "*_artefacts/Release/Standalone/*" -maxdepth 5 -prune -exec cp -R {} dist/ \; || true
+          ls -la dist
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: InstantVirtualInstrument-${{ matrix.name }}
+          path: dist
