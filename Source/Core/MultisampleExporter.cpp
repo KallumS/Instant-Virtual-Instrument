@@ -69,6 +69,8 @@ juce::AudioBuffer<float> MultisampleExporter::renderZone (const Instrument& inst
 
 namespace
 {
+    juce::String u (const char* utf8) { return juce::String::fromUTF8 (utf8); }
+    juce::String quoted (const juce::String& s) { return u ("“") + s + u ("”"); }
     juce::String noteName (int key) { return juce::MidiMessage::getMidiNoteName (key, true, true, 4); }
 
     juce::String safeName (juce::String s)
@@ -88,7 +90,7 @@ ExportResult MultisampleExporter::exportSfz (const Instrument& inst, const Engin
     auto samples = root.getChildFile ("samples");
     if (! samples.createDirectory())
     {
-        result.message = "Could not create " + samples.getFullPathName();
+        result.message = u ("Couldn’t create ") + quoted (samples.getFullPathName()) + ". Choose another folder.";
         return result;
     }
 
@@ -145,7 +147,7 @@ ExportResult MultisampleExporter::exportSfz (const Instrument& inst, const Engin
                 {
                     if (progress && ! progress ((float) done / (float) total))
                     {
-                        result.message = "Export cancelled";
+                        result.message = u ("Export stopped. The ") + juce::String (result.filesWritten) + " samples written so far are in " + quoted (root.getFullPathName()) + ".";
                         return result;
                     }
 
@@ -162,7 +164,7 @@ ExportResult MultisampleExporter::exportSfz (const Instrument& inst, const Engin
                     std::unique_ptr<juce::OutputStream> stream = file.createOutputStream();
                     if (stream == nullptr)
                     {
-                        result.message = "Could not write " + file.getFullPathName();
+                        result.message = u ("Couldn’t write ") + quoted (file.getFullPathName()) + ". Check the disk has room, or choose another folder.";
                         return result;
                     }
                     auto writer = wav.createWriterFor (stream, juce::AudioFormatWriterOptions{}
@@ -171,7 +173,7 @@ ExportResult MultisampleExporter::exportSfz (const Instrument& inst, const Engin
                                                                   .withBitsPerSample (opt.bitDepth));
                     if (writer == nullptr)
                     {
-                        result.message = "Could not create a WAV writer";
+                        result.message = u ("Couldn’t write WAV files at this sample rate. Export again from a project at 44.1 or 48 kHz.");
                         return result;
                     }
                     writer->writeFromAudioSampleBuffer (audio, 0, audio.getNumSamples());
@@ -189,14 +191,15 @@ ExportResult MultisampleExporter::exportSfz (const Instrument& inst, const Engin
     result.sfzFile = root.getChildFile (name + ".sfz");
     if (! result.sfzFile.replaceWithText (sfz))
     {
-        result.message = "Could not write " + result.sfzFile.getFullPathName();
+        result.message = u ("Couldn’t write ") + quoted (result.sfzFile.getFullPathName()) + ". Check the disk has room, or choose another folder.";
         return result;
     }
 
     result.ok = true;
-    result.message = "Exported " + juce::String (result.filesWritten) + " samples to " + root.getFullPathName();
+    result.message = "Exported " + juce::String (result.filesWritten) + " samples and " + quoted (result.sfzFile.getFileName())
+                   + " to " + quoted (root.getFullPathName()) + ". Open the .sfz in any SFZ player.";
     if (result.clippedFiles > 0)
-        result.message << " (" << result.clippedFiles << " clipped: lower the output gain and export again)";
+        result.message << " " << result.clippedFiles << u (" of them clip — lower Gain and export again.");
     if (progress)
         progress (1.0f);
     return result;

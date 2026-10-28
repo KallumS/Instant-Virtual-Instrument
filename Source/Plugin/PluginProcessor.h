@@ -45,15 +45,26 @@ public:
     void setStateInformation (const void* data, int sizeInBytes) override;
 
     // ---- editor API (message thread) -----------------------------------------
-    bool loadSampleFile (const juce::File& file, juce::String& error);
+    /** The line at the top of the window: what happened, and what to do next. */
+    struct Message
+    {
+        juce::String text;
+        bool warning = false;
+        bool canUndo = false;
+    };
+
+    void loadSampleFile (const juce::File& file);
     void loadDemo();
+    void makeNewTakes();
+    void undo();
+    void dismissMessage();
+    Message getMessage() const;
     void requestArticulation (int index);
 
     std::shared_ptr<const ivi::SpectralModel> getModel() const;
     juce::String getSampleName() const;
     bool isAnalysing() const noexcept { return analysing.load(); }
     float getAnalysisProgress() const noexcept { return analysisProgress.load(); }
-    juce::String getStatus() const;
 
     void startExport (const juce::File& folder, bool allArticulations);
     void cancelExport() { exportCancel = true; }
@@ -74,10 +85,10 @@ private:
     void handleAsyncUpdate() override;
     void timerCallback() override;
 
-    void setSourceAudio (juce::AudioBuffer<float> mono, double sampleRate, const juce::String& name);
+    void setSourceAudio (juce::AudioBuffer<float> mono, double sampleRate, const juce::String& name, bool keepForUndo);
     void startAnalysis();
     void rebuildInstrument();
-    void setStatus (const juce::String& s);
+    void say (const juce::String& text, bool warning = false, bool canUndo = false);
 
     ivi::SynthEngine engine;
 
@@ -99,7 +110,16 @@ private:
     std::atomic<float> exportProgress { 0.0f };
 
     mutable std::mutex statusMutex;
-    juce::String status { "Drop a sample (or press Demo) to build an instrument" };
+    Message message;
+
+    // what Undo brings back: the sample before the last load, or the seed before New Takes
+    enum class UndoKind { none, sample, seed };
+    UndoKind undoKind = UndoKind::none;
+    juce::AudioBuffer<float> undoAudio;
+    double undoRate = 44100.0;
+    juce::String undoName;
+    int undoSeed = 1;
+    bool offerUndoAfterAnalysis = false;
 
     std::atomic<int> pendingArticulation { -1 };
     int lastArticulationParam = -1;

@@ -9,6 +9,7 @@ jobs:
   build:
     name: ${{ matrix.name }}
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
     strategy:
       fail-fast: false
       matrix:
@@ -49,10 +50,11 @@ jobs:
 
       - name: Test
         shell: bash
+        timeout-minutes: 15
         run: |
-          ctest --test-dir build -C Release --output-on-failure
+          ctest --test-dir build -C Release --output-on-failure -V --timeout 600
           exe=$(find build -name "IVIPluginTests" -o -name "IVIPluginTests.exe" | grep -v CMakeFiles | head -1)
-          if [ "$RUNNER_OS" = "Linux" ]; then xvfb-run -a "$exe"; else "$exe"; fi
+          if [ "$RUNNER_OS" = "Linux" ]; then timeout 600 xvfb-run -a "$exe"; else "$exe"; fi
 
       - name: Collect artefacts
         shell: bash

@@ -43,5 +43,8 @@ namespace ivi::params
     juce::AudioProcessorValueTreeState::ParameterLayout createLayout();
 
     juce::String noteName (int note);
+
+    /** Text for the window, written in UTF-8 (curly quotes, dashes, the ellipsis). */
+    inline juce::String str (const char* utf8) { return juce::String::fromUTF8 (utf8); }
     juce::String dynamicMarking (float x);
 }

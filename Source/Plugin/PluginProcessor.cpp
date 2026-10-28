@@ -136,23 +136,24 @@ void IVIProcessor::requestArticulation (int index)
 
 // ---------------------------------------------------------------------------- sample loading
 
-bool IVIProcessor::loadSampleFile (const juce::File& file, juce::String& error)
+void IVIProcessor::loadSampleFile (const juce::File& file)
 {
     juce::AudioFormatManager fm;
     fm.registerBasicFormats();
     std::unique_ptr<juce::AudioFormatReader> reader (fm.createReaderFor (file));
     if (reader == nullptr)
     {
-        error = "Unsupported or unreadable audio file: " + file.getFileName();
-        return false;
+        say (params::str ("Couldn’t read “") + file.getFileName()
+                 + params::str ("”. Choose a WAV, AIFF, FLAC, Ogg or MP3 file."), true);
+        return;
     }
 
     const auto maxSamples = (juce::int64) (30.0 * reader->sampleRate);
     const int len = (int) std::min (reader->lengthInSamples, maxSamples);
     if (len < 64)
     {
-        error = "The file is too short";
-        return false;
+        say (params::str ("“") + file.getFileName() + params::str ("” is too short to use. Choose a sample of at least a tenth of a second."), true);
+        return;
     }
 
     juce::AudioBuffer<float> buf ((int) reader->numChannels, len);
@@ -163,8 +164,7 @@ bool IVIProcessor::loadSampleFile (const juce::File& file, juce::String& error)
     for (int c = 0; c < buf.getNumChannels(); ++c)
         mono.addFrom (0, 0, buf, c, 0, len, 1.0f / (float) buf.getNumChannels());
 
-    setSourceAudio (std::move (mono), reader->sampleRate, file.getFileNameWithoutExtension());
-    return true;
+    setSourceAudio (std::move (mono), reader->sampleRate, file.getFileNameWithoutExtension(), true);
 }
 
 void IVIProcessor::loadDemo()
@@ -172,18 +172,86 @@ void IVIProcessor::loadDemo()
     DemoOptions o;
     o.sampleRate = 48000.0;
     o.seconds = 3.0;
-    setSourceAudio (makeDemoSample (o), o.sampleRate, "Demo Strings");
+    setSourceAudio (makeDemoSample (o), o.sampleRate, "Demo Strings", true);
 }
 
-void IVIProcessor::setSourceAudio (juce::AudioBuffer<float> mono, double sampleRate, const juce::String& name)
+void IVIProcessor::setSourceAudio (juce::AudioBuffer<float> mono, double sampleRate, const juce::String& name, bool keepForUndo)
 {
     {
         std::lock_guard<std::mutex> lock (modelMutex);
+        offerUndoAfterAnalysis = false;
+        if (keepForUndo && sourceAudio.getNumSamples() > 0)
+        {
+            undoAudio = std::move (sourceAudio);
+            undoRate = sourceRate;
+            undoName = sampleName;
+            undoKind = UndoKind::sample;
+            offerUndoAfterAnalysis = true;
+        }
         sourceAudio = std::move (mono);
         sourceRate = sampleRate;
         sampleName = name;
     }
     startAnalysis();
+}
+
+void IVIProcessor::makeNewTakes()
+{
+    auto* seed = apvts.getParameter (params::seed);
+    const int old = (int) apvts.getRawParameterValue (params::seed)->load();
+    int next = old;
+    while (next == old)
+        next = juce::Random::getSystemRandom().nextInt ({ 1, 10000 });
+    seed->setValueNotifyingHost (seed->convertTo0to1 ((float) next));
+    undoKind = UndoKind::seed;
+    undoSeed = old;
+    say (params::str ("New round robins and layer variations, from seed ") + juce::String (next) + ".", false, true);
+}
+
+void IVIProcessor::undo()
+{
+    if (undoKind == UndoKind::seed)
+    {
+        auto* seed = apvts.getParameter (params::seed);
+        seed->setValueNotifyingHost (seed->convertTo0to1 ((float) undoSeed));
+        undoKind = UndoKind::none;
+        say (params::str ("The takes from seed ") + juce::String (undoSeed) + params::str (" are back."));
+    }
+    else if (undoKind == UndoKind::sample)
+    {
+        undoKind = UndoKind::none;
+        juce::AudioBuffer<float> audio;
+        {
+            std::lock_guard<std::mutex> lock (modelMutex);
+            audio = std::move (undoAudio);
+        }
+        setSourceAudio (std::move (audio), undoRate, undoName, false);
+    }
+}
+
+void IVIProcessor::dismissMessage()
+{
+    {
+        std::lock_guard<std::mutex> lock (statusMutex);
+        message = {};
+    }
+    undoKind = UndoKind::none;
+    sendChangeMessage();
+}
+
+IVIProcessor::Message IVIProcessor::getMessage() const
+{
+    std::lock_guard<std::mutex> lock (statusMutex);
+    return message;
+}
+
+void IVIProcessor::say (const juce::String& text, bool warning, bool canUndo)
+{
+    {
+        std::lock_guard<std::mutex> lock (statusMutex);
+        message = { text, warning, canUndo };
+    }
+    sendChangeMessage();
 }
 
 void IVIProcessor::startAnalysis()
@@ -206,8 +274,7 @@ void IVIProcessor::startAnalysis()
     const int generation = ++analysisGeneration;
     analysing = true;
     analysisProgress = 0.0f;
-    setStatus ("Analysing " + name + "...");
-    sendChangeMessage();
+    say (params::str ("Analysing “") + name + params::str ("”…"));
 
     auto aliveFlag = alive;
     workers.addJob ([this, audio = std::move (audio), rate, name, opt, generation, aliveFlag]
@@ -230,8 +297,7 @@ void IVIProcessor::startAnalysis()
             analysing = false;
             if (result == nullptr)
             {
-                setStatus ("Could not analyse " + name + " (silent or too short?)");
-                sendChangeMessage();
+                say (params::str ("“") + name + params::str ("” is silent or too short to analyse. Choose a longer sample."), true);
                 return;
             }
             {
@@ -240,11 +306,25 @@ void IVIProcessor::startAnalysis()
             }
             rebuildInstrument();
             const auto& m = *result;
+            const auto bs = currentBuildSettings();
             juce::String s;
-            s << name << ": " << (m.pitched ? "" : "no clear pitch, ") << "root " << params::noteName ((int) std::round (m.rootMidi))
-              << " (" << juce::String (m.f0Ref, 1) << " Hz), " << m.numPartials << " partials, "
-              << (m.decaying ? "decaying" : "sustained") << " source";
-            setStatus (s);
+            s << params::str ("“") << name << params::str ("” is ready — ");
+            if (m.pitched)
+                s << "root " << params::noteName ((int) std::round (m.rootMidi)) << " (" << juce::String (m.f0Ref, 1) << " Hz), ";
+            else
+                s << params::str ("no clear pitch, so it’s played as C4, ");
+            s << (m.decaying ? "a plucked or struck sound" : "a sustained sound") << ", " << m.numPartials << " partials. "
+              << (bs.highKey - bs.lowKey + 1) << params::str (" keys × ") << bs.numLayers << params::str (" layers × ")
+              << bs.numRoundRobins << " round robins.";
+            if (! m.pitched)
+                s << params::str (" If it should have a pitch, set Root note.");
+            bool canUndo;
+            {
+                std::lock_guard<std::mutex> lock (modelMutex);
+                canUndo = offerUndoAfterAnalysis && undoKind == UndoKind::sample;
+                offerUndoAfterAnalysis = false;
+            }
+            say (s, false, canUndo);
             sendChangeMessage();
         });
     });
@@ -302,18 +382,6 @@ void IVIProcessor::timerCallback()
     engine.collectGarbage();
 }
 
-void IVIProcessor::setStatus (const juce::String& s)
-{
-    std::lock_guard<std::mutex> lock (statusMutex);
-    status = s;
-}
-
-juce::String IVIProcessor::getStatus() const
-{
-    std::lock_guard<std::mutex> lock (statusMutex);
-    return status;
-}
-
 // ---------------------------------------------------------------------------- export
 
 void IVIProcessor::startExport (const juce::File& folder, bool allArticulations)
@@ -338,8 +406,7 @@ void IVIProcessor::startExport (const juce::File& folder, bool allArticulations)
     exporting = true;
     exportCancel = false;
     exportProgress = 0.0f;
-    setStatus ("Exporting...");
-    sendChangeMessage();
+    say (params::str ("Exporting…"));
 
     auto aliveFlag = alive;
     workers.addJob ([this, inst, settings, opt, aliveFlag]
@@ -355,8 +422,7 @@ void IVIProcessor::startExport (const juce::File& folder, bool allArticulations)
             if (! aliveFlag->load())
                 return;
             exporting = false;
-            setStatus (result.message);
-            sendChangeMessage();
+            say (result.message, ! result.ok || result.clippedFiles > 0);
         });
     });
 }
@@ -436,7 +502,7 @@ void IVIProcessor::setStateInformation (const void* data, int sizeInBytes)
     {
         auto apply = [this, audio = std::move (audio), rate, name]() mutable
         {
-            setSourceAudio (std::move (audio), rate, name);
+            setSourceAudio (std::move (audio), rate, name, false);
         };
         if (juce::MessageManager::getInstance()->isThisTheMessageThread())
             apply();

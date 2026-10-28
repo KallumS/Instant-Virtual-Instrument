@@ -648,6 +648,7 @@ static void renderDemoPhrase (std::shared_ptr<SpectralModel> m, const juce::File
 
 int main()
 {
+    std::setvbuf (stdout, nullptr, _IONBF, 0);   // show progress at once, even under CI
     std::printf ("Instant Virtual Instrument - core tests\n");
 
     testAnalysis();

@@ -37,6 +37,8 @@ public:
     uint16_t getKeyLayerMask (int key) const noexcept { return keyLayerMask[(size_t) key].load (std::memory_order_relaxed); }
     int getKeyRoundRobin (int key) const noexcept { return keyRoundRobin[(size_t) key].load (std::memory_order_relaxed); }
     int getLastKeyswitchNote() const noexcept { return lastKeyswitch.load(); }
+    /** Where in the sample the newest sounding note is (model frames), or -1. */
+    float getPlayheadFrame() const noexcept { return playheadFrame.load (std::memory_order_relaxed); }
 
 private:
     void handleMidi (const juce::MidiMessage& msg) noexcept;
@@ -78,6 +80,7 @@ private:
     std::atomic<int> articulationAtomic { 0 };
     std::atomic<int> activeVoicesAtomic { 0 };
     std::atomic<int> lastKeyswitch { -1 };
+    std::atomic<float> playheadFrame { -1.0f };
     std::array<std::atomic<uint16_t>, 128> keyLayerMask {};
     std::array<std::atomic<uint8_t>, 128> keyRoundRobin {};
 };

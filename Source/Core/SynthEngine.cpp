@@ -294,11 +294,14 @@ void SynthEngine::publishActivity() noexcept
     uint16_t masks[128] {};
     uint8_t rrs[128] {};
     int count = 0;
+    const ResynthVoice* newest = nullptr;
     for (auto& v : voices)
     {
         if (! v.isActive())
             continue;
         ++count;
+        if (! v.isKilling() && (newest == nullptr || v.getAge() > newest->getAge()))
+            newest = &v;
         const int n = juce::jlimit (0, 127, v.getNote());
         masks[n] |= (uint16_t) (1u << juce::jlimit (0, 15, v.getLayer()));
         rrs[n] = (uint8_t) v.getRoundRobin();
@@ -310,6 +313,8 @@ void SynthEngine::publishActivity() noexcept
             keyRoundRobin[(size_t) n].store (rrs[n], std::memory_order_relaxed);
     }
     activeVoicesAtomic.store (count, std::memory_order_relaxed);
+    playheadFrame.store (newest != nullptr && newest->getInstrument() == current ? (float) newest->getFramePos() : -1.0f,
+                         std::memory_order_relaxed);
 }
 
 void SynthEngine::process (juce::AudioBuffer<float>& output, const juce::MidiBuffer& midi) noexcept

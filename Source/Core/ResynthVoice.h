@@ -49,6 +49,7 @@ public:
     uint64_t getAge() const noexcept     { return age; }
     Articulation getArticulation() const noexcept { return articulation; }
     const Instrument* getInstrument() const noexcept { return instrument; }
+    double getFramePos() const noexcept  { return framePos; }
 
 private:
     /** Updates the oscillator/noise targets for the end of the next sub-block. Returns true when the voice has finished. */

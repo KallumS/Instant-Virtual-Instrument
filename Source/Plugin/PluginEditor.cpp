@@ -2,110 +2,212 @@
 #include "Core/Articulations.h"
 
 using namespace ivi;
-namespace colours = ivi::ui::colours;
+using namespace ivi::theme;
+using params::str;
 
 namespace
 {
     const juce::String audioWildcard = "*.wav;*.aif;*.aiff;*.flac;*.ogg;*.mp3";
-    constexpr int kWidth = 1180, kHeight = 812;
+
+    /** A cell's width: at least 68 points, and wide enough for its label on two lines. */
+    int labelFit (const juce::String& name)
+    {
+        const float one = textWidth (name);
+        if (one + 10.0f <= 68.0f)
+            return 68;
+        float best = one;
+        auto words = juce::StringArray::fromTokens (name, " ", {});
+        for (int i = 1; i < words.size(); ++i)
+        {
+            juce::StringArray a, b;
+            for (int j = 0; j < words.size(); ++j)
+                (j < i ? a : b).add (words[j]);
+            best = juce::jmin (best, juce::jmax (textWidth (a.joinIntoString (" ")), textWidth (b.joinIntoString (" "))));
+        }
+        return juce::jmax (68, (int) std::ceil (best) + 10);
+    }
+
+    juce::String articulationHint (Articulation a)
+    {
+        switch (a)
+        {
+            case Articulation::Sustain:    return "A long note that holds while the key is down.";
+            case Articulation::Legato:     return "Play overlapping notes and they glide into each other without a new attack.";
+            case Articulation::Staccato:   return "Short and detached. Plays to its end whatever the key does.";
+            case Articulation::Spiccato:   return "Shorter and brighter than staccato, off the string.";
+            case Articulation::Marcato:    return "An accented, bright attack that settles into a softer held note.";
+            case Articulation::Pizzicato:  return "Plucked: it rings and dies away, the upper partials first.";
+            case Articulation::Tremolo:    return "A fast, slightly uneven tremolo. Tremolo rate sets its speed.";
+            case Articulation::Swell:      return "A crescendo from soft, growing brighter through the layers.";
+            case Articulation::Fortepiano: return "A loud attack that drops straight to soft.";
+            case Articulation::Count:      break;
+        }
+        return {};
+    }
+
+    /** Lays components left to right, wrapping at the edge. */
+    struct Flow
+    {
+        int x0, width, x, y, rowH = 0;
+        Flow (int left, int w, int top) : x0 (left), width (w), x (left), y (top) {}
+        void add (juce::Component& c, int w, int h)
+        {
+            if (x > x0 && x + w > x0 + width)
+                newRow();
+            c.setBounds (x, y, w, h);
+            x += w + gap;
+            rowH = juce::jmax (rowH, h);
+        }
+        void newRow() { x = x0; y += rowH + gap; rowH = 0; }
+        int bottom() const { return y + rowH; }
+    };
 }
 
-// ---------------------------------------------------------------------------- Group
+// ============================================================================ Group
 
-void IVIEditor::Group::paint (juce::Graphics& g)
+void IVIContent::Group::paint (juce::Graphics& g)
 {
     auto r = getLocalBounds().toFloat().reduced (0.5f);
-    g.setColour (colours::panel);
-    g.fillRoundedRectangle (r, 6.0f);
-    g.setColour (colours::panelEdge);
+    g.setColour (rule);
     g.drawRoundedRectangle (r, 6.0f, 1.0f);
-    g.setColour (colours::dim);
-    g.setFont (juce::FontOptions (11.5f, juce::Font::bold));
-    g.drawText (title.toUpperCase(), getLocalBounds().removeFromTop (20).reduced (10, 0), juce::Justification::centredLeft);
+    g.setColour (label);
+    g.setFont (font());
+    g.drawText (title, juce::Rectangle<int> (12, 12, getWidth() - 24, 18), juce::Justification::centredLeft);
 }
 
-void IVIEditor::Group::add (juce::Component& c, const juce::String& label, int width)
+void IVIContent::Group::add (juce::Component& c, const juce::String& name, int width)
 {
-    auto l = std::make_unique<juce::Label> (juce::String(), label);
-    l->setJustificationType (juce::Justification::centred);
-    l->setFont (juce::FontOptions (11.5f));
+    auto l = std::make_unique<juce::Label> (juce::String(), name);
+    l->setJustificationType (juce::Justification::centredBottom);
+    l->setFont (font());
+    l->setMinimumHorizontalScale (1.0f);
+    l->setColour (juce::Label::textColourId, label);
     l->setInterceptsMouseClicks (false, false);
     addAndMakeVisible (*l);
     addAndMakeVisible (c);
     cells.push_back ({ &c, std::move (l), width });
 }
 
-void IVIEditor::Group::resized()
+int IVIContent::Group::naturalWidth() const
 {
-    auto r = getLocalBounds().reduced (6, 0).withTrimmedTop (20).withTrimmedBottom (6);
+    int w = 24;
+    for (auto& c : cells)
+        w += c.width;
+    return w + gap * juce::jmax (0, (int) cells.size() - 1);
+}
+
+int IVIContent::Group::heightFor (int width) const
+{
+    int rows = 1, x = 12;
     for (auto& cell : cells)
     {
-        auto col = r.removeFromLeft (cell.width);
-        cell.label->setBounds (col.removeFromTop (16));
+        if (x > 12 && x + cell.width > width - 12)
+        {
+            ++rows;
+            x = 12;
+        }
+        x += cell.width + gap;
+    }
+    return 12 + 18 + 8 + rows * rowHeight + (rows - 1) * gap + 10;
+}
+
+void IVIContent::Group::resized()
+{
+    int x = 12, top = 12 + 18 + 8;
+    for (auto& cell : cells)
+    {
+        if (x > 12 && x + cell.width > getWidth() - 12)
+        {
+            x = 12;
+            top += rowHeight + gap;
+        }
+        cell.label->setBounds (x, top, cell.width, labelHeight);
+        const int y = top + labelHeight + 4;
         if (dynamic_cast<juce::Slider*> (cell.comp) != nullptr)
-            cell.comp->setBounds (col);
+            cell.comp->setBounds (x, y, cell.width, knobHeight);
         else
-            cell.comp->setBounds (col.withSizeKeepingCentre (col.getWidth() - 6, 24).translated (0, -8));
+            cell.comp->setBounds (x, y + 10, cell.width, controlHeight);
+        x += cell.width + gap;
     }
 }
 
-// ---------------------------------------------------------------------------- helpers
+// ============================================================================ content
 
-juce::Slider& IVIEditor::knob (Group& g, const char* id, const juce::String& label, const juce::String& tip)
+juce::Slider& IVIContent::knob (Group& g, const char* id, const juce::String& name, const juce::String& tip)
 {
-    auto* s = ownedControls.add (new juce::Slider (juce::Slider::RotaryHorizontalVerticalDrag, juce::Slider::TextBoxBelow));
-    auto* slider = static_cast<juce::Slider*> (s);
-    slider->setTextBoxStyle (juce::Slider::TextBoxBelow, false, 62, 15);
-    slider->setTooltip (tip);
-    g.add (*slider, label);
-    sliderAttachments.push_back (std::make_unique<juce::AudioProcessorValueTreeState::SliderAttachment> (processor.apvts, id, *slider));
-    return *slider;
+    auto* s = static_cast<juce::Slider*> (owned.add (new juce::Slider (juce::Slider::RotaryHorizontalVerticalDrag, juce::Slider::TextBoxBelow)));
+    const int w = labelFit (name);
+    s->setTextBoxStyle (juce::Slider::TextBoxBelow, false, w, 22);
+    s->setWantsKeyboardFocus (true);   // JUCE's sliders turn it off; the arrow keys then move the value
+    s->setTooltip (tip);
+    s->setTitle (name);
+    g.add (*s, name, w);
+    sliderAttachments.push_back (std::make_unique<juce::AudioProcessorValueTreeState::SliderAttachment> (processor.apvts, id, *s));
+    return *s;
 }
 
-juce::ComboBox& IVIEditor::combo (Group& g, const char* id, const juce::String& label, const juce::String& tip, int width)
+juce::ComboBox& IVIContent::combo (Group& g, const char* id, const juce::String& name, const juce::String& tip, const juce::StringArray& itemsIn)
 {
-    auto* c = static_cast<juce::ComboBox*> (ownedControls.add (new juce::ComboBox()));
-    if (auto* choice = dynamic_cast<juce::AudioParameterChoice*> (processor.apvts.getParameter (id)))
-        c->addItemList (choice->choices, 1);
+    auto* c = static_cast<juce::ComboBox*> (owned.add (new juce::ComboBox()));
+    auto items = itemsIn;
+    if (items.isEmpty())
+        if (auto* choice = dynamic_cast<juce::AudioParameterChoice*> (processor.apvts.getParameter (id)))
+            items = choice->choices;
+    c->addItemList (items, 1);
+    float widest = 0.0f;
+    for (auto& i : items)
+        widest = juce::jmax (widest, textWidth (i));
+    const int w = juce::jmax (labelFit (name), (int) std::ceil (widest) + 46);
     c->setTooltip (tip);
-    g.add (*c, label, width);
+    c->setTitle (name);
+    g.add (*c, name, w);
     comboAttachments.push_back (std::make_unique<juce::AudioProcessorValueTreeState::ComboBoxAttachment> (processor.apvts, id, *c));
     return *c;
 }
 
-juce::ToggleButton& IVIEditor::toggle (Group& g, const char* id, const juce::String& label, const juce::String& tip)
+juce::ToggleButton& IVIContent::toggle (Group& g, const char* id, const juce::String& name, const juce::String& tip)
 {
-    auto* b = static_cast<juce::ToggleButton*> (ownedControls.add (new juce::ToggleButton ("On")));
+    auto* b = static_cast<juce::ToggleButton*> (owned.add (new juce::ToggleButton ("On")));
     b->setTooltip (tip);
-    g.add (*b, label, 66);
+    b->setTitle (name);
+    g.add (*b, name, juce::jmax (labelFit (name), (int) std::ceil (textWidth ("On")) + 44));
     buttonAttachments.push_back (std::make_unique<juce::AudioProcessorValueTreeState::ButtonAttachment> (processor.apvts, id, *b));
     return *b;
 }
 
-// ---------------------------------------------------------------------------- editor
-
-IVIEditor::IVIEditor (IVIProcessor& p)
-    : AudioProcessorEditor (p), processor (p), waveform (p), spectrum (p), zoneMap (p), keyboard (p, p.keyboardState)
+IVIContent::IVIContent (IVIProcessor& p)
+    : loadButton (str ("Load Sample…")), demoButton ("Load Demo Sound"), exportButton (str ("Export SFZ…")),
+      undoButton ("Undo"), dismissButton ("Dismiss"), newTakesButton ("New Takes"),
+      waveform (p), spectrum (p), zoneMap (p), keyboard (p, p.keyboardState), processor (p)
 {
-    setLookAndFeel (&lnf);
+    setFocusContainerType (juce::Component::FocusContainerType::keyboardFocusContainer);
 
+    for (auto* b : { &loadButton, &demoButton, &exportButton, &undoButton, &dismissButton })
+        addChildComponent (*b);
     for (auto* b : { &loadButton, &demoButton, &exportButton })
-        addAndMakeVisible (*b);
-    loadButton.onClick = [this] { chooseSample(); };
+        b->setVisible (true);
+    loadButton.setTooltip (str ("Choose one audio file of a single note: WAV, AIFF, FLAC, Ogg or MP3. You can also drop a file on the window."));
+    demoButton.setTooltip ("Build an instrument from a built-in string-like tone, to try things out.");
+    exportButton.setTooltip ("Write every key, layer and round robin to WAV files, with an SFZ file that maps them for any SFZ player.");
+    undoButton.setTooltip ("Bring back what the last change replaced.");
+    dismissButton.setTooltip ("Clear this message.");
+    loadButton.onClick = [this] { if (onLoad) onLoad(); };
     demoButton.onClick = [this] { processor.loadDemo(); };
-    exportButton.onClick = [this]
-    {
-        if (processor.isExporting()) processor.cancelExport();
-        else                         showExportMenu();
-    };
-    loadButton.setTooltip ("Load one audio sample (wav, aiff, flac, ogg, mp3). You can also drag a file onto the window.");
-    demoButton.setTooltip ("Build an instrument from a built-in synthetic string tone");
-    exportButton.setTooltip ("Bake the generated library to WAV files plus an SFZ map for any SFZ sampler");
+    exportButton.onClick = [this] { if (onExport) onExport(); };
+    undoButton.onClick = [this] { processor.undo(); };
+    dismissButton.onClick = [this] { processor.dismissMessage(); };
 
-    statusLabel.setJustificationType (juce::Justification::centredRight);
-    statusLabel.setColour (juce::Label::textColourId, colours::dim);
-    statusLabel.setFont (juce::FontOptions (12.5f));
-    addAndMakeVisible (statusLabel);
+    textSizeLabel.setText ("Text size", juce::dontSendNotification);
+    textSizeLabel.setFont (font());
+    textSizeLabel.setColour (juce::Label::textColourId, label);
+    textSizeLabel.setJustificationType (juce::Justification::centredRight);
+    addAndMakeVisible (textSizeLabel);
+    for (auto s : IVIEditor::textSizes())
+        textSize.addItem (juce::String (s) + "%", s);
+    textSize.setTooltip (str ("Make the whole window larger. Cmd+= and Cmd+– change it, and Cmd+0 goes back to 100% (Ctrl on Windows)."));
+    textSize.setTitle ("Text size");
+    textSize.onChange = [this] { if (onTextSize) onTextSize(); };
+    addAndMakeVisible (textSize);
 
     addAndMakeVisible (waveform);
     addAndMakeVisible (spectrum);
@@ -115,73 +217,294 @@ IVIEditor::IVIEditor (IVIProcessor& p)
     for (int a = 0; a < kNumArticulations; ++a)
     {
         auto* b = articulationButtons.add (new juce::TextButton (articulationName ((Articulation) a)));
-        b->setClickingTogglesState (false);
         b->onClick = [this, a] { processor.requestArticulation (a); };
         addAndMakeVisible (b);
     }
 
     // ---- mapping
     {
-        auto* root = static_cast<juce::ComboBox*> (ownedControls.add (new juce::ComboBox()));
-        root->addItem ("Auto", 1);
+        juce::StringArray notes { "Auto" };
         for (int n = 0; n < 128; ++n)
-            root->addItem (params::noteName (n), n + 2);
-        root->setTooltip ("Root note of the sample. Auto uses pitch detection; set it if detection picks the wrong octave.");
-        mapping.add (*root, "Root", 86);
-        comboAttachments.push_back (std::make_unique<juce::AudioProcessorValueTreeState::ComboBoxAttachment> (processor.apvts, params::rootNote, *root));
+            notes.add (params::noteName (n));
+        combo (mapping, params::rootNote, "Root note",
+               "The note your sample plays. Auto finds it; set it if Auto picks the wrong octave.", notes);
     }
-    knob (mapping, params::lowKey, "Low Key", "Lowest key the sample is mapped to");
-    knob (mapping, params::highKey, "High Key", "Highest key the sample is mapped to");
-    knob (mapping, params::layers, "Layers", "Number of dynamic layers (pp ... ff) generated for every key");
-    knob (mapping, params::roundRobins, "Round Robins", "Alternate takes generated for every key and layer");
-    knob (mapping, params::variation, "Variation", "How different the takes are: tuning, timbre, attack, timing and noise");
-    knob (mapping, params::seed, "Seed", "Seed for the generated variations");
-    newSeedButton.setTooltip ("Generate a fresh set of round robins and layer variations");
-    newSeedButton.onClick = [this]
-    {
-        if (auto* s = processor.apvts.getParameter (params::seed))
-            s->setValueNotifyingHost (s->convertTo0to1 ((float) juce::Random::getSystemRandom().nextInt ({ 1, 9999 })));
-    };
-    mapping.add (newSeedButton, "", 84);
+    knob (mapping, params::lowKey, "Lowest key", "The lowest key the instrument plays.");
+    knob (mapping, params::highKey, "Highest key", "The highest key the instrument plays.");
+    knob (mapping, params::layers, "Dynamic layers", "How many dynamic layers each key has, from pp to ff. Louder layers are brighter and speak faster.");
+    knob (mapping, params::roundRobins, "Round robins", "How many takes each key and layer has. Repeated notes cycle through them.");
+    knob (mapping, params::variation, "Variation", "How different the takes are: tuning, tone, attack, timing and noise.");
+    knob (mapping, params::seed, "Seed", "The number the variations are made from. The same number always gives the same takes.");
+    newTakesButton.setTooltip (str ("Make a fresh set of round robins and layer variations. Undo brings the old ones back."));
+    newTakesButton.onClick = [this] { processor.makeNewTakes(); };
+    mapping.add (newTakesButton, "", buttonWidth (newTakesButton.getButtonText()));
     addAndMakeVisible (mapping);
 
     // ---- timbre
-    knob (timbre, params::formant, "Formant", "0% = timbre moves with pitch (chipmunk). 100% = body resonances stay fixed (natural).");
-    knob (timbre, params::brightness, "Dyn Bright", "How much brighter loud layers are than soft ones");
-    knob (timbre, params::sourceDynamic, "Source Dyn", "The dynamic your sample was played at. Layers are generated around it.");
-    knob (timbre, params::noise, "Noise", "Level of the bow / breath / hammer noise component");
-    knob (timbre, params::partials, "Partials", "Maximum number of partials per voice (quality vs CPU)");
+    knob (timbre, params::formant, "Formant", str ("At 0% the tone moves with the pitch, like a sped-up tape. At 100% the instrument’s body stays put, as a real one does."));
+    knob (timbre, params::brightness, "Brightness", "How much brighter the loud layers are than the soft ones.");
+    knob (timbre, params::sourceDynamic, "Source dynamic", "The dynamic your sample was played at. The layers are made around it.");
+    knob (timbre, params::noise, "Noise", "The level of the bow, breath or hammer noise in the sound.");
+    knob (timbre, params::partials, "Partials", "How many partials each note has. Fewer use less CPU; more sound fuller in low notes.");
     addAndMakeVisible (timbre);
 
     // ---- dynamics
-    knob (dynamics, params::dynRange, "Range", "Loudness difference between the softest and loudest layer");
-    toggle (dynamics, params::velocityBlend, "Blend", "Smoothly interpolate between neighbouring layers instead of switching");
-    combo (dynamics, params::dynSource, "Dynamics", "Velocity, or the mod wheel (CC1) for long articulations", 96);
-    combo (dynamics, params::rrMode, "RR Mode", "Cycle through round robins, or pick randomly without repeats", 84);
+    knob (dynamics, params::dynRange, "Dynamic range", "How much louder the loudest layer is than the softest.");
+    toggle (dynamics, params::velocityBlend, "Layer blend", "When on, the sound moves smoothly between neighbouring layers instead of switching.");
+    combo (dynamics, params::dynSource, "Dynamics from", "Velocity, or the mod wheel (CC1) for long articulations, as orchestral libraries do.");
+    combo (dynamics, params::rrMode, "Round robin order", "Cycle through the takes in turn, or pick them at random without repeating one.");
     addAndMakeVisible (dynamics);
 
     // ---- shape
-    knob (shape, params::attack, "Attack", "Extra fade-in");
-    knob (shape, params::release, "Release", "Release time after note-off");
-    knob (shape, params::glide, "Glide", "Legato transition time");
-    knob (shape, params::tremoloRate, "Trem Rate", "Tremolo speed");
-    knob (shape, params::pitchDrift, "Pitch Drift", "How much of the sample's own pitch movement (vibrato) is kept");
-    combo (shape, params::sustainMode, "Sustain", "Auto loops sustained sounds and lets plucked/struck sounds decay", 84);
+    knob (shape, params::attack, "Attack", "An extra fade-in at the start of each note.");
+    knob (shape, params::release, "Release", "How long a note takes to die away after you let go.");
+    knob (shape, params::glide, "Legato glide", "How long Legato takes to slide from one note to the next.");
+    knob (shape, params::tremoloRate, "Tremolo rate", "How fast Tremolo is, in strokes a second.");
+    knob (shape, params::pitchDrift, "Pitch drift", str ("How much of the sample’s own pitch movement, such as vibrato, is kept."));
+    combo (shape, params::sustainMode, "Sustain", "Auto loops sustained sounds and lets plucked or struck ones die away. Loop and Natural choose for you.");
     addAndMakeVisible (shape);
 
     // ---- output
-    knob (output, params::gain, "Gain", "Output level");
-    knob (output, params::width, "Width", "Stereo spread across the keyboard");
-    knob (output, params::polyphony, "Polyphony", "Maximum simultaneous notes");
-    knob (output, params::bendRange, "Bend", "Pitch bend range (semitones)");
-    knob (output, params::ksBase, "KS Base", "Lowest keyswitch note. The 9 articulations follow chromatically.");
-    toggle (output, params::keyswitches, "Keyswitch", "Enable keyswitches");
+    knob (output, params::gain, "Gain", "The output level.");
+    knob (output, params::width, "Stereo width", "Spreads the keyboard across the stereo field: low notes left, high notes right.");
+    knob (output, params::polyphony, "Polyphony", "How many notes can sound at once.");
+    knob (output, params::bendRange, "Bend range", "How far the pitch wheel bends, in semitones.");
+    toggle (output, params::keyswitches, "Keyswitches", "When on, the nine keys from Lowest keyswitch choose the articulation.");
+    {
+        juce::StringArray notes;
+        for (int n = 0; n <= 127 - 9; ++n)
+            notes.add (params::noteName (n));
+        combo (output, params::ksBase, "Lowest keyswitch", "The key that chooses Sustain. The other eight articulations follow it up the keyboard.", notes);
+    }
     addAndMakeVisible (output);
 
-    processor.addChangeListener (this);
-    setSize (kWidth, kHeight);
+    clicksKeepFocus (*this);
+    updateArticulationButtons();
+    refreshFromProcessor();
+}
+
+void IVIContent::paint (juce::Graphics& g)
+{
+    g.fillAll (ground);
+    if (shownMessage.text.isNotEmpty() && ! messageArea.isEmpty())
+    {
+        auto r = messageArea.toFloat();
+        if (shownMessage.warning)
+        {
+            // the red marks; the words are in the lighter red, which can be read
+            g.setColour (warn);
+            g.fillRoundedRectangle (r.removeFromLeft (4.0f), 2.0f);
+            r.removeFromLeft (8.0f);
+        }
+        juce::AttributedString s;
+        s.append (shownMessage.text, font(), shownMessage.warning ? warnText : textDim);
+        s.setWordWrap (juce::AttributedString::byWord);
+        s.setJustification (juce::Justification::centredLeft);
+        s.draw (g, r);
+    }
+}
+
+int IVIContent::layout (int W)
+{
+    const int m = gap, inner = W - 2 * m;
+    int y = m;
+
+    // toolbar: the actions, then Text size at the right
+    {
+        Flow f (m, inner, y);
+        for (auto* b : { &loadButton, &demoButton, &exportButton })
+            f.add (*b, buttonWidth (b->getButtonText()), controlHeight);
+        const int lw = (int) std::ceil (textWidth (textSizeLabel.getText())) + 6, cw = (int) std::ceil (textWidth ("200%")) + 46;
+        if (f.x + lw + cw > m + inner)
+            f.newRow();
+        const int right = m + inner;
+        textSize.setBounds (right - cw, f.y, cw, controlHeight);
+        textSizeLabel.setBounds (right - cw - lw - 6, f.y, lw, controlHeight);
+        f.rowH = juce::jmax (f.rowH, controlHeight);
+        y = f.bottom() + m;
+    }
+
+    // the message, at the top until dismissed
+    undoButton.setVisible (shownMessage.text.isNotEmpty() && shownMessage.canUndo);
+    dismissButton.setVisible (shownMessage.text.isNotEmpty());
+    messageArea = {};
+    if (shownMessage.text.isNotEmpty())
+    {
+        int right = m + inner;
+        const int dw = buttonWidth (dismissButton.getButtonText()), uw = buttonWidth (undoButton.getButtonText());
+        dismissButton.setBounds (right - dw, y, dw, controlHeight);
+        right -= dw + gap;
+        if (shownMessage.canUndo)
+        {
+            undoButton.setBounds (right - uw, y, uw, controlHeight);
+            right -= uw + gap;
+        }
+        const int tw = juce::jmax (100, right - m - (shownMessage.warning ? 12 : 0));
+        juce::AttributedString s;
+        s.append (shownMessage.text, font());
+        s.setWordWrap (juce::AttributedString::byWord);
+        juce::TextLayout tl;
+        tl.createLayout (s, (float) tw);
+        const int h = juce::jmax (controlHeight, (int) std::ceil (tl.getHeight()) + 4);
+        messageArea = { m, y, right - m, h };
+        y += h + m;
+    }
+
+    // the sample and its model
+    constexpr int viewH = 150;
+    if (inner >= 900)
+    {
+        const int ww = (int) ((inner - gap) * 0.58f);
+        waveform.setBounds (m, y, ww, viewH);
+        spectrum.setBounds (m + ww + gap, y, inner - ww - gap, viewH);
+        y += viewH + m;
+    }
+    else
+    {
+        waveform.setBounds (m, y, inner, viewH);
+        y += viewH + m;
+        spectrum.setBounds (m, y, inner, viewH);
+        y += viewH + m;
+    }
+
+    // the library
+    {
+        const int zh = zoneMap.heightFor (inner);
+        zoneMap.setBounds (m, y, inner, zh);
+        y += zh + m;
+    }
+
+    // articulations: one row across the window when they fit, else wrapped
+    {
+        int bw = 0;
+        for (auto* b : articulationButtons)
+            bw = juce::jmax (bw, buttonWidth (b->getButtonText()));
+        const int n = articulationButtons.size();
+        if (n * bw + (n - 1) * gap <= inner)
+            bw = (inner - (n - 1) * gap) / n;
+        Flow f (m, inner, y);
+        for (auto* b : articulationButtons)
+            f.add (*b, bw, controlHeight);
+        y = f.bottom() + m;
+    }
+
+    // the settings, wrapping at the edge
+    {
+        Flow f (m, inner, y);
+        for (auto* g : { &mapping, &timbre, &dynamics, &shape, &output })
+        {
+            const int gw = juce::jmin (inner, g->naturalWidth());
+            f.add (*g, gw, g->heightFor (gw));
+        }
+        y = f.bottom() + m;
+    }
+
+    keyboard.setBounds (m, y, inner, 80);
+    keyboard.setKeyWidth ((float) inner / 52.0f);
+    y += 80 + m;
+    return y;
+}
+
+void IVIContent::refreshFromProcessor()
+{
+    const auto msg = processor.getMessage();
+    const bool relayout = msg.text != shownMessage.text || msg.canUndo != shownMessage.canUndo || msg.warning != shownMessage.warning;
+    shownMessage = msg;
+    if (relayout && getWidth() > 0)
+        layout (getWidth());
     waveform.refresh();
-    changeListenerCallback (nullptr);
+    spectrum.repaint();
+    zoneMap.repaint();
+    exportButton.setEnabled (processor.getModel() != nullptr || processor.isExporting());
+    repaint();
+}
+
+void IVIContent::updateArticulationButtons()
+{
+    const int a = processor.getEngine().getArticulation();
+    const auto es = processor.currentEngineSettings();
+    const int ks = es.keyswitchesEnabled ? es.keyswitchBase : -1;
+    if (a == shownArticulation && ks == shownKeyswitchBase)
+        return;
+    shownArticulation = a;
+    shownKeyswitchBase = ks;
+    for (int i = 0; i < articulationButtons.size(); ++i)
+    {
+        auto* b = articulationButtons[i];
+        b->setToggleState (i == a, juce::dontSendNotification);
+        juce::String tip = articulationHint ((Articulation) i);
+        if (es.keyswitchesEnabled)
+            tip << " Keyswitch " << params::noteName (es.keyswitchBase + i) << ".";
+        b->setTooltip (tip);
+    }
+}
+
+void IVIContent::tick()
+{
+    updateArticulationButtons();
+    waveform.tick();
+    zoneMap.repaint();
+    keyboard.repaint();
+
+    if (processor.isExporting())
+    {
+        shownMessage = { str ("Exporting… ") + juce::String (juce::roundToInt (processor.getExportProgress() * 100.0f))
+                             + str ("%. Stop Export ends it; the samples written so far are kept."), false, false };
+        repaint (messageArea);
+    }
+    if (processor.isExporting() != wasExporting)
+    {
+        wasExporting = processor.isExporting();
+        exportButton.setButtonText (wasExporting ? "Stop Export" : str ("Export SFZ…"));
+        layout (getWidth());
+        if (! wasExporting)
+            refreshFromProcessor();
+    }
+}
+
+// ============================================================================ editor
+
+const juce::Array<int>& IVIEditor::textSizes()
+{
+    static const juce::Array<int> sizes { 100, 125, 150, 200 };
+    return sizes;
+}
+
+IVIEditor::IVIEditor (IVIProcessor& p)
+    : AudioProcessorEditor (p), processor (p), content (p)
+{
+    setLookAndFeel (&lnf);
+    setWantsKeyboardFocus (true);
+
+    juce::PropertiesFile::Options o;
+    o.applicationName = "Instant Virtual Instrument";
+    o.filenameSuffix = ".settings";
+    o.folderName = "Instant Virtual Instrument";
+    o.osxLibrarySubFolder = "Application Support";
+    prefs = std::make_unique<juce::PropertiesFile> (o);
+    textSizePercent = prefs->getIntValue ("textSize", 100);
+    if (! textSizes().contains (textSizePercent))
+        textSizePercent = 100;
+
+    viewport.setScrollBarsShown (true, false, true, false);
+    viewport.setViewedComponent (&holder, false);
+    holder.addAndMakeVisible (content);
+    addAndMakeVisible (viewport);
+
+    content.onLoad = [this] { chooseSample(); };
+    content.onExport = [this]
+    {
+        if (processor.isExporting()) processor.cancelExport();
+        else                         showExportMenu();
+    };
+    content.onTextSize = [this] { setTextSize (content.textSize.getSelectedId()); };
+    content.textSize.setSelectedId (textSizePercent, juce::dontSendNotification);
+
+    processor.addChangeListener (this);
+    setResizable (true, true);
+    const auto pref = preferredSize();
+    setResizeLimits (IVIContent::minimumWidth, 400, 8000, 6000);
+    setSize (pref.getWidth(), pref.getHeight());
     startTimerHz (30);
 }
 
@@ -191,137 +514,120 @@ IVIEditor::~IVIEditor()
     setLookAndFeel (nullptr);
 }
 
+juce::Rectangle<int> IVIEditor::preferredSize() const
+{
+    const float s = (float) textSizePercent / 100.0f;
+    IVIContent& c = const_cast<IVIContent&> (content);
+    const int h = c.layout (IVIContent::preferredWidth);
+    int w = juce::roundToInt ((float) IVIContent::preferredWidth * s), hh = juce::roundToInt ((float) h * s);
+    if (auto* d = juce::Desktop::getInstance().getDisplays().getPrimaryDisplay())
+    {
+        w = juce::jmin (w, d->userArea.getWidth() - 40);
+        hh = juce::jmin (hh, d->userArea.getHeight() - 80);
+    }
+    return { juce::jmax (IVIContent::minimumWidth, w), juce::jmax (400, hh) };
+}
+
+void IVIEditor::setTextSize (int percent)
+{
+    if (! textSizes().contains (percent) || percent == textSizePercent)
+        return;
+    textSizePercent = percent;
+    prefs->setValue ("textSize", percent);
+    prefs->saveIfNeeded();
+    content.textSize.setSelectedId (percent, juce::dontSendNotification);
+    const auto pref = preferredSize();
+    setResizeLimits (juce::roundToInt ((float) IVIContent::minimumWidth * (float) percent / 100.0f), 400, 8000, 6000);
+    setSize (pref.getWidth(), pref.getHeight());
+    layoutContent();
+}
+
 void IVIEditor::paint (juce::Graphics& g)
 {
-    g.fillAll (colours::background);
-
-    auto header = getLocalBounds().removeFromTop (50).reduced (14, 0);
-    g.setColour (colours::text);
-    g.setFont (juce::FontOptions (20.0f, juce::Font::bold));
-    g.drawText ("INSTANT VIRTUAL INSTRUMENT", header.removeFromLeft (330), juce::Justification::centredLeft);
-    g.setColour (colours::dim);
-    g.setFont (juce::FontOptions (12.5f));
-    g.drawText ("one sample in, a whole instrument out", header.removeFromLeft (240), juce::Justification::centredLeft);
+    g.fillAll (ground);
 }
 
 void IVIEditor::resized()
 {
-    auto r = getLocalBounds().reduced (12, 0);
+    viewport.setBounds (getLocalBounds());
+    layoutContent();
+}
 
-    auto header = r.removeFromTop (50);
-    header.removeFromLeft (580);
-    loadButton.setBounds (header.removeFromLeft (118).withSizeKeepingCentre (112, 28));
-    demoButton.setBounds (header.removeFromLeft (70).withSizeKeepingCentre (64, 28));
-    exportButton.setBounds (header.removeFromLeft (118).withSizeKeepingCentre (112, 28));
-    statusLabel.setBounds (getLocalBounds().removeFromTop (78).removeFromBottom (24).reduced (14, 0));
-    r.removeFromTop (26);
+void IVIEditor::layoutContent()
+{
+    const float s = (float) textSizePercent / 100.0f;
+    auto fit = [&] (int available)
+    {
+        const int w = juce::jmax (IVIContent::minimumWidth, (int) ((float) available / s));
+        return std::make_pair (w, content.layout (w));
+    };
+    auto [w, h] = fit (viewport.getWidth());
+    if ((float) h * s > (float) viewport.getHeight())
+        std::tie (w, h) = fit (viewport.getWidth() - viewport.getScrollBarThickness());
+    content.setTransform (juce::AffineTransform::scale (s));
+    content.setBounds (0, 0, w, h);
+    holder.setSize (juce::roundToInt ((float) w * s), juce::roundToInt ((float) h * s));
+}
 
-    auto top = r.removeFromTop (172);
-    waveform.setBounds (top.removeFromLeft (690));
-    top.removeFromLeft (8);
-    spectrum.setBounds (top);
-    r.removeFromTop (8);
-
-    zoneMap.setBounds (r.removeFromTop (132));
-    r.removeFromTop (8);
-
-    auto artRow = r.removeFromTop (30);
-    const int bw = artRow.getWidth() / kNumArticulations;
-    for (auto* b : articulationButtons)
-        b->setBounds (artRow.removeFromLeft (bw).reduced (2, 0));
-    r.removeFromTop (8);
-
-    auto row1 = r.removeFromTop (106);
-    mapping.setBounds (row1.removeFromLeft (620));
-    row1.removeFromLeft (8);
-    timbre.setBounds (row1);
-    r.removeFromTop (8);
-
-    auto row2 = r.removeFromTop (106);
-    dynamics.setBounds (row2.removeFromLeft (324));
-    row2.removeFromLeft (8);
-    shape.setBounds (row2.removeFromLeft (420));
-    row2.removeFromLeft (8);
-    output.setBounds (row2);
-    r.removeFromTop (8);
-
-    keyboard.setBounds (r.removeFromTop (r.getHeight() - 8));
-    keyboard.setKeyWidth ((float) keyboard.getWidth() / 52.0f);
+bool IVIEditor::keyPressed (const juce::KeyPress& k)
+{
+    const auto& sizes = textSizes();
+    const int i = sizes.indexOf (textSizePercent);
+    if (k.getModifiers().isCommandDown())
+    {
+        const auto c = k.getTextCharacter();
+        if (c == '=' || c == '+' || k.getKeyCode() == '=')  { setTextSize (sizes[juce::jmin (sizes.size() - 1, i + 1)]); return true; }
+        if (c == '-' || k.getKeyCode() == '-')               { setTextSize (sizes[juce::jmax (0, i - 1)]); return true; }
+        if (c == '0' || k.getKeyCode() == '0')               { setTextSize (100); return true; }
+    }
+    if (k.isKeyCode (juce::KeyPress::escapeKey))
+    {
+        // Esc lets go of the keyboard first, as on the Mac
+        if (auto* f = juce::Component::getCurrentlyFocusedComponent(); f != nullptr && f != this)
+        {
+            grabKeyboardFocus();
+            return true;
+        }
+    }
+    return false;
 }
 
 void IVIEditor::changeListenerCallback (juce::ChangeBroadcaster*)
 {
-    statusLabel.setText (processor.getStatus(), juce::dontSendNotification);
-    waveform.refresh();
-    spectrum.repaint();
-    zoneMap.repaint();
-    exportButton.setEnabled (processor.getModel() != nullptr);
+    const auto before = content.getHeight();
+    content.refreshFromProcessor();
+    if (content.layout (content.getWidth()) != before)
+        layoutContent();
 }
 
 void IVIEditor::timerCallback()
 {
-    const bool busy = processor.isAnalysing() || processor.isExporting();
-    if (processor.isAnalysing())
-        waveform.repaint();
-    if (processor.isExporting())
-        statusLabel.setText ("Exporting... " + juce::String (juce::roundToInt (processor.getExportProgress() * 100.0f)) + " %  (click Cancel to stop)",
-                             juce::dontSendNotification);
-    if (busy != wasBusy)
-    {
-        exportButton.setButtonText (processor.isExporting() ? "Cancel" : "Export SFZ...");
-        wasBusy = busy;
-    }
-    updateArticulationButtons();
-    zoneMap.repaint();
-    keyboard.repaint();
-}
-
-void IVIEditor::updateArticulationButtons()
-{
-    const int a = processor.getEngine().getArticulation();
-    if (a == shownArticulation)
-        return;
-    shownArticulation = a;
-    const auto es = processor.currentEngineSettings();
-    for (int i = 0; i < articulationButtons.size(); ++i)
-    {
-        auto* b = articulationButtons[i];
-        b->setToggleState (i == a, juce::dontSendNotification);
-        b->setTooltip (articulationName ((Articulation) i) + (es.keyswitchesEnabled
-                           ? "  (keyswitch " + params::noteName (es.keyswitchBase + i) + ")" : juce::String()));
-    }
+    content.tick();
 }
 
 void IVIEditor::chooseSample()
 {
-    chooser = std::make_unique<juce::FileChooser> ("Choose a sample", juce::File(), audioWildcard);
+    chooser = std::make_unique<juce::FileChooser> ("Choose a Sample", juce::File(), audioWildcard);
     chooser->launchAsync (juce::FileBrowserComponent::openMode | juce::FileBrowserComponent::canSelectFiles,
                           [this] (const juce::FileChooser& fc)
                           {
                               const auto f = fc.getResult();
                               if (f.existsAsFile())
-                                  loadFile (f);
+                                  processor.loadSampleFile (f);
                           });
-}
-
-void IVIEditor::loadFile (const juce::File& f)
-{
-    juce::String error;
-    if (! processor.loadSampleFile (f, error))
-        juce::AlertWindow::showMessageBoxAsync (juce::MessageBoxIconType::WarningIcon, "Could not load sample", error);
 }
 
 void IVIEditor::showExportMenu()
 {
     juce::PopupMenu menu;
-    menu.addItem (1, "Export current articulation (" + articulationName ((Articulation) processor.getEngine().getArticulation()) + ")...");
-    menu.addItem (2, "Export all articulations (keyswitched SFZ)...");
-    menu.showMenuAsync (juce::PopupMenu::Options().withTargetComponent (exportButton), [this] (int choice)
+    menu.addItem (1, str ("Export This Articulation (") + articulationName ((Articulation) processor.getEngine().getArticulation()) + str (")…"));
+    menu.addItem (2, str ("Export All Articulations…"));
+    menu.showMenuAsync (juce::PopupMenu::Options().withTargetComponent (content.exportButton), [this] (int choice)
     {
         if (choice == 0)
             return;
         const bool all = choice == 2;
-        chooser = std::make_unique<juce::FileChooser> ("Choose a folder for the exported library",
+        chooser = std::make_unique<juce::FileChooser> ("Choose a Folder for the Library",
                                                        juce::File::getSpecialLocation (juce::File::userDocumentsDirectory));
         chooser->launchAsync (juce::FileBrowserComponent::openMode | juce::FileBrowserComponent::canSelectDirectories,
                               [this, all] (const juce::FileChooser& fc)
@@ -346,7 +652,8 @@ void IVIEditor::filesDropped (const juce::StringArray& files, int, int)
     for (auto& f : files)
         if (juce::File (f).hasFileExtension (audioWildcard))
         {
-            loadFile (juce::File (f));
+            processor.loadSampleFile (juce::File (f));
             return;
         }
+    processor.loadSampleFile (juce::File (files[0]));   // says what it can't read, and what to choose instead
 }

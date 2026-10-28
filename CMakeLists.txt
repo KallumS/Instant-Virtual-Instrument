@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.22)
 
-project(InstantVirtualInstrument VERSION 0.1.0 LANGUAGES C CXX)
+project(InstantVirtualInstrument VERSION 0.2.0 LANGUAGES C CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -47,7 +47,7 @@ set(IVI_COMMON_DEFINITIONS
     JUCE_DISPLAY_SPLASH_SCREEN=0)
 
 if(MSVC)
-    set(IVI_WARNINGS /W3)
+    set(IVI_WARNINGS /W3 /utf-8)
 else()
     set(IVI_WARNINGS -Wall -Wextra -Wno-unused-parameter)
 endif()
@@ -82,7 +82,7 @@ target_sources(InstantVirtualInstrument PRIVATE
     Source/Plugin/PluginEditor.cpp
     Source/Plugin/Parameters.cpp
     Source/Plugin/Views.cpp
-    Source/Plugin/LookAndFeel.cpp)
+    Source/Plugin/Theme.cpp)
 
 target_include_directories(InstantVirtualInstrument PRIVATE Source)
 target_compile_options(InstantVirtualInstrument PRIVATE ${IVI_WARNINGS})
