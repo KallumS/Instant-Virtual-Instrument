@@ -154,5 +154,5 @@ were proved this way (session log, 2026-10-25).
 
 **Left open** (none asked for yet): Increase Contrast and Reduce Motion not
 read from the system; the views not described for VoiceOver; Windows and
-macOS builds only built by CI, never run here; real recordings never heard
+macOS only built and tested by CI (all green since run 2), never played in a host; real recordings never heard
 here - only synthetic tones were measured.
